@@ -1,25 +1,29 @@
-const openaiService = require('./openai.service');
+const ClaudeService = require('./claude.service');
 
 class AIService {
+  constructor() {
+    this.claudeService = new ClaudeService();
+  }
+
   /**
-   * Método unificado para gerar conteúdo com qualquer assistente
+   * Método unificado para gerar conteúdo com Claude
    * @param {Object} payload - Dados estruturados (perguntas e respostas)
    * @param {Function} onChunk - Callback para receber chunks do stream
-   * @param {string} assistantId - ID do assistente OpenAI específico
    * @returns {Promise<string>} - Conteúdo completo gerado
    */
-  async generateStreamWithAssistant(payload, onChunk, assistantId) {
+  async generateStreamWithAssistant(payload, onChunk) {
     try {
-      if (!assistantId) {
-        throw new Error('Assistant ID é obrigatório');
-      }
-
-      console.log('🤖 AI Service: Chamando OpenAI Assistant', assistantId);
+      console.log('🤖 AI Service: Chamando Claude API');
       
-      return await openaiService.generateStreamWithAssistant(
+      // Generate all phases with Claude
+      const { getAllPhases } = require('../data/launch-phases');
+      const phases = getAllPhases();
+      
+      return await this.claudeService.generateEmailsForPhaseStream(
+        'all-phases',
         payload,
-        onChunk,
-        assistantId
+        {},
+        onChunk
       );
     } catch (error) {
       console.error('Erro no AI Service:', error);
@@ -28,36 +32,16 @@ class AIService {
   }
 
   /**
-   * Método otimizado para gerar emails com prompt estruturado
-   * @param {Object} answers - Respostas do questionário
-   * @param {Array} questions - Perguntas do questionário
-   * @param {Function} onChunk - Callback para receber chunks do stream
-   * @param {string} assistantId - ID do assistente OpenAI específico
-   * @param {Object} batchInfo - Informações do lote (opcional)
-   * @returns {Promise<string>} - Conteúdo completo gerado
+   * Test Claude connection
+   * @returns {Promise<boolean>} - Connection status
    */
-  async generateStreamWithAssistantEnhanced(answers, questions, onChunk, assistantId, batchInfo = null) {
+  async testConnection() {
     try {
-      if (!assistantId) {
-        throw new Error('Assistant ID é obrigatório');
-      }
-
-      if (batchInfo) {
-        console.log(`🚀 AI Service: Gerando lote ${batchInfo.batchNumber}/6`, assistantId);
-      } else {
-        console.log('🚀 AI Service: Gerando com prompt otimizado', assistantId);
-      }
-      
-      return await openaiService.generateStreamWithAssistantEnhanced(
-        answers,
-        questions,
-        onChunk,
-        assistantId,
-        batchInfo
-      );
+      console.log('🧪 Testing Claude connection...');
+      return await this.claudeService.testConnection();
     } catch (error) {
-      console.error('Erro no AI Service Enhanced:', error);
-      throw error;
+      console.error('Error testing Claude connection:', error);
+      return false;
     }
   }
 }

@@ -3,7 +3,7 @@ const emailsService = require('../services/emails.service');
 const emailsController = {
   async generateStreamEmails(req, res) {
     try {
-      const { answers, questions, batchInfo } = req.body;
+      const { answers, questions, batchInfo, phase, isSequential } = req.body;
 
       if (!answers || !questions) {
         return res.status(400).json({
@@ -12,7 +12,10 @@ const emailsController = {
         });
       }
 
-      if (batchInfo) {
+      // Log generation type
+      if (phase) {
+        console.log(`📧 Iniciando geração de emails por fase - Fase: ${phase}...`);
+      } else if (batchInfo) {
         console.log(`📧 Iniciando geração de emails - Lote ${batchInfo.batchNumber}/6...`);
       } else {
         console.log('📧 Iniciando geração de emails via OpenAI Assistant...');
@@ -35,22 +38,34 @@ const emailsController = {
 
       try {
         // Enviar metadata inicial
-        sendChunk({
+        const metadata = {
           totalQuestions: questions.length,
           answeredQuestions: Object.keys(answers).length,
-          assistantId: process.env.OPENAI_ASSISTANT_ID_EMAILS
-        }, 'metadata');
+          provider: 'claude',
+          model: process.env.CLAUDE_MODEL || 'claude-3-5-sonnet-20241022',
+          generationType: isSequential ? 'sequential' : (phase ? 'phase' : 'full'),
+          phase: phase || null,
+          isSequential: isSequential || false
+        };
+        
+        sendChunk(metadata, 'metadata');
 
-        // Gerar emails usando o serviço atualizado (com suporte a lotes)
+        // Gerar emails usando Claude com sistema de fases
         const fullContent = await emailsService.generateEmailsStream(
           answers, 
           questions, 
           (chunk) => sendChunk(chunk, 'content'),
-          batchInfo
+          batchInfo,
+          phase
         );
 
         // Enviar sinal de conclusão
-        sendChunk({ status: 'completed', totalLength: fullContent.length }, 'complete');
+        sendChunk({ 
+          status: 'completed', 
+          totalLength: fullContent.length,
+          phase: phase || null,
+          generationType: phase ? 'phase' : (batchInfo ? 'batch' : 'full')
+        }, 'complete');
 
       } catch (error) {
         console.error('Erro na geração de emails:', error);
