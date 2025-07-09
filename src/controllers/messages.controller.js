@@ -9,7 +9,7 @@ const messagesController = {
         return res.status(400).json({ error: 'Type and context are required' });
       }
 
-      // Using OpenAI assistant for message generation
+      // Using Claude service for message generation
       const result = await messagesService.generateMessage(type, context);
       
       res.json({
@@ -22,38 +22,9 @@ const messagesController = {
     }
   },
 
-  async getTemplates(req, res) {
-    try {
-      const templates = await messagesService.getTemplates();
-      
-      res.json({
-        success: true,
-        data: templates
-      });
-    } catch (error) {
-      console.error('Error getting templates:', error);
-      res.status(500).json({ error: 'Failed to get templates' });
-    }
-  },
-
-  async getHistory(req, res) {
-    try {
-      const { type } = req.query;
-      const history = await messagesService.getHistory(type);
-      
-      res.json({
-        success: true,
-        data: history
-      });
-    } catch (error) {
-      console.error('Error getting history:', error);
-      res.status(500).json({ error: 'Failed to get history' });
-    }
-  },
-
   async generateStream(req, res) {
     try {
-      const { answers, questions, existingContent } = req.body;
+      const { answers, questions, existingContent, level, phase, messageNumbers } = req.body;
       
       if (!answers || !questions) {
         return res.status(400).json({ error: 'Answers and questions are required' });
@@ -76,44 +47,119 @@ const messagesController = {
 
       // Send initial metadata
       const metadata = {
+        provider: 'claude',
+        generationType: messageNumbers ? 'specific-messages' : (phase ? 'single-phase' : 'all-phases'),
         totalQuestions: questions.length,
         answeredQuestions: Object.keys(answers).length,
         completionRate: Math.round((Object.keys(answers).length / questions.length) * 100),
-        generatedAt: new Date().toISOString()
+        generatedAt: new Date().toISOString(),
+        level: level || 'complete',
+        phase: phase || null,
+        messageNumbers: messageNumbers || null
       };
 
       res.write(`data: ${JSON.stringify({ type: 'metadata', data: metadata })}\n\n`);
 
-      // Generate messages with streaming
-      await messagesService.generateMessagesStream(answers, questions, existingContent, (chunk) => {
-        res.write(`data: ${JSON.stringify({ type: 'content', data: chunk })}\n\n`);
-      });
+      // Generate messages with Claude streaming
+      if (messageNumbers && Array.isArray(messageNumbers)) {
+        // Generate specific messages by numbers
+        await messagesService.generateSpecificMessages(
+          messageNumbers,
+          answers, 
+          questions, 
+          (chunk) => {
+            res.write(`data: ${JSON.stringify({ type: 'content', data: chunk })}\n\n`);
+          }
+        );
+      } else if (phase) {
+        // Generate specific phase
+        await messagesService.generatePhaseWithClaude(
+          phase, 
+          answers, 
+          questions, 
+          existingContent,
+          (chunk) => {
+            res.write(`data: ${JSON.stringify({ type: 'content', data: chunk })}\n\n`);
+          }
+        );
+      } else {
+        // Generate all phases sequentially
+        await messagesService.generateAllPhasesWithClaude(
+          answers, 
+          questions, 
+          existingContent,
+          (chunk) => {
+            res.write(`data: ${JSON.stringify({ type: 'content', data: chunk })}\n\n`);
+          }
+        );
+      }
 
       // Send completion signal
       res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
       res.end();
 
     } catch (error) {
+      console.error('Error in generateStream:', error);
       res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
       res.end();
     }
   },
 
-  async getById(req, res) {
+  async debug(req, res) {
     try {
-      const { id } = req.params;
-      const messageSet = await messagesService.getById(id);
+      const { answers, questions } = req.body;
       
-      if (!messageSet) {
-        return res.status(404).json({ error: 'Message set not found' });
+      if (!answers || !questions) {
+        return res.status(400).json({ error: 'Answers and questions are required' });
       }
+
+      const result = messagesService.debugFormat(answers, questions);
+      res.json(result);
+    } catch (error) {
+      console.error('Error in debug:', error);
+      res.status(500).json({ error: 'Failed to debug format' });
+    }
+  },
+
+  async getTemplates(req, res) {
+    try {
+      const { getMessageNumbersByPhase, getMessageTemplate } = require('../data/message-templates');
+      const { getPhaseOrder } = require('../data/messages-phases');
       
+      const phases = getPhaseOrder();
+      const templatesInfo = {};
+      
+      phases.forEach(phase => {
+        try {
+          const messageNumbers = getMessageNumbersByPhase(phase);
+          templatesInfo[phase] = {
+            messageCount: messageNumbers.length,
+            messages: messageNumbers.map(num => {
+              const template = getMessageTemplate(num);
+              return {
+                number: num,
+                name: template.name,
+                timing: template.timing
+              };
+            })
+          };
+        } catch (error) {
+          console.error(`Error processing phase ${phase}:`, error);
+          templatesInfo[phase] = { messageCount: 0, messages: [] };
+        }
+      });
+
       res.json({
         success: true,
-        data: messageSet
+        data: {
+          phases: templatesInfo,
+          totalPhases: phases.length,
+          totalMessages: Object.values(templatesInfo).reduce((sum, phase) => sum + phase.messageCount, 0)
+        }
       });
     } catch (error) {
-      res.status(500).json({ error: 'Failed to get message set' });
+      console.error('Error getting templates:', error);
+      res.status(500).json({ error: 'Failed to get templates info' });
     }
   }
 };

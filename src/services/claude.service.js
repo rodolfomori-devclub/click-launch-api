@@ -1,10 +1,10 @@
 const Anthropic = require('@anthropic-ai/sdk');
-const { getTemplatesByPhase, getGuidelinesForPhase } = require('../data/email-templates');
-const { getPreviousPhases, getEmailsByPhase } = require('../data/launch-phases');
+const { getMessageTemplate, getTemplatesByPhase } = require('../data/message-templates');
+const { MESSAGES_PHASES, getMessagesByPhase, getPhaseForMessage, getPreviousPhases } = require('../data/messages-phases');
 
 /**
- * Claude Service for Email Generation
- * Handles phase-based email generation using Anthropic Claude API
+ * Claude Service for Messages Generation
+ * Handles phase-based message generation using Anthropic Claude API
  */
 class ClaudeService {
   constructor() {
@@ -15,24 +15,23 @@ class ClaudeService {
   }
 
   /**
-   * Generate emails for a specific phase
-   * @param {string} phase - The phase to generate emails for
+   * Generate messages for a specific phase/lote
+   * @param {string} phase - The phase/lote to generate messages for (lote1, lote2, etc.)
    * @param {object} questionsAndAnswers - User's answers to the questionnaire
    * @param {object} previousPhasesContext - Context from previous phases
-   * @returns {Promise<string>} - Generated emails content
+   * @returns {Promise<string>} - Generated messages content
    */
-  async generateEmailsForPhase(phase, questionsAndAnswers, previousPhasesContext = {}) {
+  async generateMessagesForPhase(phase, questionsAndAnswers, previousPhasesContext = {}) {
     const startTime = Date.now();
     
     try {
       this.validateInputs(phase, questionsAndAnswers);
       
       const templates = getTemplatesByPhase(phase);
-      const guidelines = getGuidelinesForPhase(phase);
-      const prompt = this.buildPhasePrompt(phase, templates, guidelines, questionsAndAnswers, previousPhasesContext);
+      const prompt = this.buildPhasePrompt(phase, templates, questionsAndAnswers, previousPhasesContext);
 
       console.log(`[Claude Service] Starting generation for phase: ${phase}`);
-      console.log(`[Claude Service] Emails in phase: ${templates.map(t => t.number).join(', ')}`);
+      console.log(`[Claude Service] Messages in phase: ${templates.map(t => t.number).join(', ')}`);
       console.log(`[Claude Service] Prompt length: ${prompt.length} characters`);
 
       const response = await this.anthropic.messages.create({
@@ -57,7 +56,7 @@ class ClaudeService {
       return generatedContent;
     } catch (error) {
       const duration = Date.now() - startTime;
-      console.error(`[Claude Service] Error generating emails for phase ${phase} after ${duration}ms:`, {
+      console.error(`[Claude Service] Error generating messages for phase ${phase} after ${duration}ms:`, {
         error: error.message,
         phase,
         stack: error.stack
@@ -68,15 +67,15 @@ class ClaudeService {
   }
 
   /**
-   * Generate emails for a specific phase with streaming support and retry mechanism
-   * @param {string} phase - The phase to generate emails for
+   * Generate messages for a specific phase with streaming support and retry mechanism
+   * @param {string} phase - The phase to generate messages for
    * @param {object} questionsAndAnswers - User's answers to the questionnaire
    * @param {object} previousPhasesContext - Context from previous phases
    * @param {function} onChunk - Callback for each chunk of data
    * @param {number} maxRetries - Maximum number of retry attempts
    * @returns {Promise<string>} - Complete generated content
    */
-  async generateEmailsForPhaseStream(phase, questionsAndAnswers, previousPhasesContext = {}, onChunk, maxRetries = 5) {
+  async generateMessagesForPhaseStream(phase, questionsAndAnswers, previousPhasesContext = {}, onChunk, maxRetries = 5) {
     return this.executeWithRetry(async (attempt) => {
       const startTime = Date.now();
       let streamStarted = false;
@@ -85,11 +84,10 @@ class ClaudeService {
         this.validateInputs(phase, questionsAndAnswers);
         
         const templates = getTemplatesByPhase(phase);
-        const guidelines = getGuidelinesForPhase(phase);
-        const prompt = this.buildPhasePrompt(phase, templates, guidelines, questionsAndAnswers, previousPhasesContext);
+        const prompt = this.buildPhasePrompt(phase, templates, questionsAndAnswers, previousPhasesContext);
 
         console.log(`[Claude Service] Starting streaming generation for phase: ${phase} (attempt ${attempt}/${maxRetries})`);
-        console.log(`[Claude Service] Emails in phase: ${templates.map(t => t.number).join(', ')}`);
+        console.log(`[Claude Service] Messages in phase: ${templates.map(t => t.number).join(', ')}`);
         console.log(`[Claude Service] Prompt length: ${prompt.length} characters`);
 
         const stream = await this.anthropic.messages.stream({
@@ -151,95 +149,217 @@ class ClaudeService {
   }
 
   /**
-   * Build the prompt for a specific phase
-   * @param {string} phase - The phase to generate emails for
-   * @param {Array} templates - Email templates for this phase
-   * @param {object} guidelines - Guidelines for this phase
-   * @param {object} questionsAndAnswers - User's answers
-   * @param {object} previousPhasesContext - Context from previous phases
-   * @returns {string} - Complete prompt for Claude
+   * Generate individual WhatsApp message
+   * @param {number} messageNumber - The message number (1-70)
+   * @param {object} questionsAndAnswers - User's answers to the questionnaire  
+   * @param {string} previousContext - Context from previous messages
+   * @returns {Promise<string>} - Generated message
    */
-  buildPhasePrompt(phase, templates, guidelines, questionsAndAnswers, previousPhasesContext) {
-    const emails = getEmailsByPhase(phase);
-    const emailNumbers = emails.map(e => e.number);
+  async generateIndividualMessage(messageNumber, questionsAndAnswers, previousContext = '') {
+    const startTime = Date.now();
     
-    let prompt = `# GERAÇÃO DE EMAILS POR FASE - FASE: ${phase.toUpperCase()}
+    try {
+      const template = getMessageTemplate(messageNumber);
+      const prompt = this.buildIndividualMessagePrompt(messageNumber, template, questionsAndAnswers, previousContext);
 
-## INFORMAÇÕES DA FASE
-- **Nome da Fase**: ${guidelines.general}
-- **Tom**: ${guidelines.tone}
-- **Objetivos**: ${guidelines.objectives.join(', ')}
-- **Emails a Gerar**: ${emailNumbers.join(', ')} (${emailNumbers.length} emails)
+      console.log(`[Claude Service] Generating individual message ${messageNumber}: ${template.name}`);
 
-## CONTEXTO DO LANÇAMENTO
+      const response = await this.anthropic.messages.create({
+        model: this.model,
+        max_tokens: 1500,
+        temperature: 0.7,
+        system: this.getIndividualMessageSystemPrompt(),
+        messages: [
+          {
+            role: 'user',
+            content: prompt
+          }
+        ]
+      });
+
+      const generatedContent = response.content[0].text;
+      const duration = Date.now() - startTime;
+      
+      console.log(`[Claude Service] Individual message ${messageNumber} generated in ${duration}ms`);
+      
+      return generatedContent;
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      console.error(`[Claude Service] Error generating individual message ${messageNumber} after ${duration}ms:`, {
+        error: error.message,
+        messageNumber,
+        stack: error.stack
+      });
+      
+      this.handleError(error, `individual message generation for message ${messageNumber}`);
+    }
+  }
+
+  /**
+   * Generate individual WhatsApp message with streaming
+   */
+  async generateIndividualMessageStream(messageNumber, questionsAndAnswers, previousContext, onChunk) {
+    const template = getMessageTemplate(messageNumber);
+    const prompt = this.buildIndividualMessagePrompt(messageNumber, template, questionsAndAnswers, previousContext);
+    
+    console.log(`[Claude Service] Streaming individual message ${messageNumber}: ${template.name}`);
+
+    const stream = await this.anthropic.messages.stream({
+      model: this.model,
+      max_tokens: 1500,
+      temperature: 0.7,
+      system: this.getIndividualMessageSystemPrompt(),
+      messages: [
+        {
+          role: 'user',
+          content: prompt
+        }
+      ]
+    });
+
+    let fullContent = '';
+    
+    for await (const chunk of stream) {
+      if (chunk.type === 'content_block_delta' && chunk.delta.text) {
+        const text = chunk.delta.text;
+        fullContent += text;
+        if (onChunk) {
+          onChunk(text);
+        }
+      }
+    }
+    
+    return fullContent;
+  }
+
+  /**
+   * Generate messages in batches for better performance
+   * @param {string} phase - The phase to generate messages for
+   * @param {object} questionsAndAnswers - User's answers
+   * @param {function} onChunk - Callback for streaming data
+   * @param {number} batchSize - Number of messages per batch
+   */
+  async generateMessagesInBatches(phase, questionsAndAnswers, onChunk, batchSize = 3) {
+    const templates = getTemplatesByPhase(phase);
+    const messages = templates.map(t => t.number);
+    
+    console.log(`[Claude Service] Generating ${messages.length} messages in batches of ${batchSize}`);
+    
+    let allResults = [];
+    let previousContext = '';
+    
+    // Process messages in batches
+    for (let i = 0; i < messages.length; i += batchSize) {
+      const batch = messages.slice(i, i + batchSize);
+      const batchNumber = Math.floor(i / batchSize) + 1;
+      const totalBatches = Math.ceil(messages.length / batchSize);
+      
+      console.log(`[Claude Service] Processing batch ${batchNumber}/${totalBatches}: messages ${batch.join(', ')}`);
+      
+      // Send batch start info
+      if (onChunk) {
+        onChunk(`\n=== LOTE ${batchNumber}/${totalBatches} - MENSAGENS ${batch.join(', ')} ===\n\n`);
+      }
+      
+      // Generate each message in the batch
+      for (const messageNumber of batch) {
+        const template = getMessageTemplate(messageNumber);
+        
+        if (onChunk) {
+          onChunk(`**MENSAGEM ${messageNumber}: ${template.name.toUpperCase()}**\n\n`);
+        }
+        
+        try {
+          const result = await this.generateIndividualMessageStream(
+            messageNumber, 
+            questionsAndAnswers, 
+            previousContext,
+            onChunk
+          );
+          
+          allResults.push({
+            messageNumber,
+            name: template.name,
+            content: result
+          });
+          
+          // Update context for next message
+          previousContext += `\nMensagem ${messageNumber} (${template.name}): ${result.substring(0, 200)}...\n`;
+          
+          if (onChunk) {
+            onChunk(`\n\n---\n\n`);
+          }
+          
+        } catch (error) {
+          console.error(`[Claude Service] Error in batch processing for message ${messageNumber}:`, error);
+          if (onChunk) {
+            onChunk(`\n❌ Erro ao gerar mensagem ${messageNumber}: ${error.message}\n\n`);
+          }
+        }
+      }
+      
+      // Add delay between batches (except for the last batch)
+      if (i + batchSize < messages.length) {
+        if (onChunk) {
+          onChunk(`\n🔄 Processando próximo lote...\n\n`);
+        }
+        await this.sleep(2000);
+      }
+    }
+    
+    return allResults;
+  }
+
+  /**
+   * Build phase prompt for multiple messages generation
+   */
+  buildPhasePrompt(phase, templates, questionsAndAnswers, previousPhasesContext) {
+    const phaseInfo = MESSAGES_PHASES[phase];
+    
+    const prompt = `
+GERAÇÃO DE MENSAGENS PARA LANÇAMENTO - ${phaseInfo.name.toUpperCase()}
+
+CONTEXTO DO LOTE:
+${phaseInfo.description}
+Objetivo: ${phaseInfo.context}
+
+INSTRUÇÕES GERAIS:
+Você deve gerar ${templates.length} mensagens de WhatsApp para este lote, cada uma seguindo as instruções específicas de seu template.
+
+QUESTIONÁRIO RESPONDIDO:
 ${this.formatQuestionsAndAnswers(questionsAndAnswers)}
 
-`;
+${Object.keys(previousPhasesContext).length > 0 ? 
+  `CONTEXTO DOS LOTES ANTERIORES:\n${this.formatPreviousPhasesContext(previousPhasesContext)}\n` : 
+  ''
+}
 
-    // Add previous phases context if available
-    if (Object.keys(previousPhasesContext).length > 0) {
-      prompt += `## CONTEXTO DAS FASES ANTERIORES
-${this.formatPreviousPhasesContext(previousPhasesContext)}
+MENSAGENS PARA GERAR:
 
-`;
-    }
+${templates.map((template, index) => `
+MENSAGEM ${template.number}: ${template.template.name.toUpperCase()}
+Tema: ${template.template.tema}
+Objetivo: ${template.template.objetivo}
+Timing: ${template.template.timing}
+Elementos: ${template.template.elementos.join(', ')}
 
-    // Add templates and guidelines for each email
-    prompt += `## TEMPLATES E ORIENTAÇÕES DOS EMAILS
+INSTRUÇÕES ESPECÍFICAS:
+${template.template.prompt}
 
-`;
+${index < templates.length - 1 ? '---' : ''}
+`).join('\n')}
 
-    templates.forEach(({ number, name, template }) => {
-      prompt += `### EMAIL ${number}: ${name}
-**Template:**
-${template.framework}
+FORMATO DE RESPOSTA:
+Para cada mensagem, use este formato exato:
 
-**Orientações Específicas:**
-${template.guidelines}
+**MENSAGEM [NÚMERO]: [NOME DA MENSAGEM]**
+
+[Conteúdo da mensagem aqui]
 
 ---
 
+Mantenha consistência entre as mensagens e use as informações do questionário para personalizar cada uma.
 `;
-    });
-
-    prompt += `## INSTRUÇÕES PARA GERAÇÃO
-
-1. **Gere exatamente ${emailNumbers.length} emails** correspondentes aos números: ${emailNumbers.join(', ')}
-
-2. **Mantenha coerência narrativa** entre os emails desta fase e com as fases anteriores (se houver)
-
-3. **Use as informações do questionário** para personalizar cada email, substituindo todos os placeholders como [NOME], [PRODUTO], [BENEFÍCIO PRINCIPAL], etc.
-
-4. **Siga exatamente a estrutura e tom** dos templates fornecidos
-
-5. **Respeite as orientações específicas** de cada email
-
-6. **Formato de saída**: Para cada email, use este formato:
-   \`\`\`
-   EMAIL [NÚMERO] - [NOME DO EMAIL]
-   ASSUNTO: [Assunto personalizado]
-   
-   [Conteúdo do email personalizado]
-   
-   ---
-   \`\`\`
-
-7. **Personalização obrigatória**: Substitua TODOS os placeholders pelos dados reais do questionário
-
-8. **Coerência**: Mantenha consistência de linguagem, tom e informações entre todos os emails
-
-9. **Qualidade**: Cada email deve ser completo, persuasivo e pronto para envio
-
-Comece a geração agora:
-
-IMPORTANTE: 
-- Gere EXATAMENTE ${emailNumbers.length} emails (números: ${emailNumbers.join(', ')})
-- Use o separador "---" entre cada email
-- Mantenha a numeração sequencial correta
-- Não deixe emails em branco ou incompletos
-- Cada email deve ser completo e separado claramente
-- Use sempre o formato: EMAIL [NÚMERO] - [NOME]
-- Garanta que cada email tenha assunto e conteúdo completos`;
 
     return prompt;
   }
@@ -510,6 +630,22 @@ Sempre substitua os placeholders pelos dados reais fornecidos no questionário, 
       console.error(`[Claude Service] Unexpected error in ${context}:`, errorInfo);
       throw new Error(`Failed to complete ${context}: ${error.message}`);
     }
+  }
+
+  /**
+   * System prompt for individual message generation
+   */
+  getIndividualMessageSystemPrompt() {
+    return `Você é um especialista em copywriting para WhatsApp, focado em campanhas de lançamento. 
+
+Suas mensagens devem ser:
+- Diretas e envolventes
+- Apropriadas para o momento específico da campanha
+- Personalizadas conforme o negócio do cliente
+- Persuasivas sem ser agressivas
+- Formatadas para WhatsApp (emojis quando apropriado)
+
+Gere APENAS o conteúdo da mensagem, sem títulos, sem formatação extra.`;
   }
 }
 
