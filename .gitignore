@@ -147,13 +147,7 @@ Thumbs.db
 *.swo
 *~
 
-# Project specific
-uploads/
-storage/
-data/
-backups/
-*.sqlite
-*.db
+
 
 # API keys and sensitive data
 keys/
