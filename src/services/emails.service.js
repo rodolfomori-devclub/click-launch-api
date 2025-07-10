@@ -1,15 +1,18 @@
-const ClaudeService = require('./claude.service');
+const AIProviderFactory = require('./ai-provider.factory');
 const { getAllPhases, getPhaseOrder, getPreviousPhases } = require('../data/launch-phases');
 
 class EmailsService {
   constructor() {
-    this.claudeService = new ClaudeService();
+    this.aiService = AIProviderFactory.createEmailsProvider();
     this.phaseContexts = {}; // Store context from completed phases
+    this.currentProvider = AIProviderFactory.getCurrentEmailsProvider();
+    
+    console.log(`[EmailsService] Initialized with provider: ${this.currentProvider}`);
   }
 
   async generateEmailsStream(answers, questions, onChunk, batchInfo = null, phase = null) {
     try {
-      console.log(`📤 GERANDO EMAILS COM CLAUDE`);
+      console.log(`📤 GERANDO EMAILS COM ${this.currentProvider.toUpperCase()}`);
       console.log(`📊 Perguntas: ${questions.length}, Respostas: ${Object.keys(answers).length}`);
       
       // Single phase generation
@@ -45,7 +48,7 @@ class EmailsService {
       });
 
       // Generate emails for this phase
-      const generatedContent = await this.claudeService.generateEmailsForPhaseStream(
+      const generatedContent = await this.aiService.generateEmailsForPhaseStream(
         phase,
         questionsAndAnswers,
         previousPhasesContext,
@@ -53,7 +56,7 @@ class EmailsService {
       );
 
       // Store context for next phases
-      this.phaseContexts[phase] = this.claudeService.generatePhaseContext(phase, generatedContent);
+      this.phaseContexts[phase] = this.aiService.generatePhaseContext(phase, generatedContent);
 
       return generatedContent;
     } catch (error) {
@@ -89,7 +92,7 @@ class EmailsService {
         });
 
         // Generate emails for this phase
-        const phaseContent = await this.claudeService.generateEmailsForPhaseStream(
+        const phaseContent = await this.aiService.generateEmailsForPhaseStream(
           phase,
           questionsAndAnswers,
           previousPhasesContext,
@@ -97,7 +100,7 @@ class EmailsService {
         );
 
         // Store context for next phases
-        this.phaseContexts[phase] = this.claudeService.generatePhaseContext(phase, phaseContent);
+        this.phaseContexts[phase] = this.aiService.generatePhaseContext(phase, phaseContent);
         
         allContent += phaseContent;
         
@@ -125,24 +128,28 @@ class EmailsService {
     return payload;
   }
 
-  // Para debug - retorna informações sobre o sistema Claude por fases
+  // Para debug - retorna informações sobre o sistema AI por fases
   debugFormat(answers, questions) {
     const questionsAndAnswers = this.formatQuestionsAndAnswers(answers, questions);
     const phases = getAllPhases();
+    const providerInfo = AIProviderFactory.getProviderInfo();
     
     return {
       success: true,
-      provider: 'claude',
+      provider: this.currentProvider,
       data: {
-        method: 'Claude Phase-based Generation System',
+        method: `${this.currentProvider.toUpperCase()} Phase-based Generation System`,
         totalQuestions: questions.length,
         answeredQuestions: Object.keys(answers).length,
         completionRate: Math.round((Object.keys(answers).length / questions.length) * 100),
         phases: phases.length,
         phaseNames: phases.map(p => p.name),
         totalEmails: phases.reduce((sum, p) => sum + p.emails.length, 0),
-        model: process.env.CLAUDE_MODEL || 'claude-3-5-sonnet-20241022',
-        improvement: 'Sistema de fases com 80% menos tokens e melhor coerência narrativa'
+        model: providerInfo.configurations[this.currentProvider]?.model || 'Unknown',
+        maxTokens: providerInfo.configurations[this.currentProvider]?.maxTokens || 'Unknown',
+        improvement: 'Sistema de fases com 80% menos tokens e melhor coerência narrativa',
+        availableProviders: providerInfo.available,
+        providerConfig: providerInfo.configurations[this.currentProvider]
       }
     };
   }

@@ -1,4 +1,5 @@
 const emailsService = require('../services/emails.service');
+const AIProviderFactory = require('../services/ai-provider.factory');
 
 const emailsController = {
   async generateStreamEmails(req, res) {
@@ -38,19 +39,23 @@ const emailsController = {
 
       try {
         // Enviar metadata inicial
+        const providerInfo = AIProviderFactory.getProviderInfo();
+        const currentProvider = AIProviderFactory.getCurrentEmailsProvider();
+        
         const metadata = {
           totalQuestions: questions.length,
           answeredQuestions: Object.keys(answers).length,
-          provider: 'claude',
-          model: process.env.CLAUDE_MODEL || 'claude-3-5-sonnet-20241022',
+          provider: currentProvider,
+          model: providerInfo.configurations[currentProvider]?.model || 'Unknown',
           generationType: isSequential ? 'sequential' : (phase ? 'phase' : 'full'),
           phase: phase || null,
-          isSequential: isSequential || false
+          isSequential: isSequential || false,
+          availableProviders: providerInfo.available
         };
         
         sendChunk(metadata, 'metadata');
 
-        // Gerar emails usando Claude com sistema de fases
+        // Gerar emails usando o provider configurado com sistema de fases
         const fullContent = await emailsService.generateEmailsStream(
           answers, 
           questions, 
@@ -143,6 +148,45 @@ const emailsController = {
     } catch (error) {
       console.error('Error exporting email:', error);
       res.status(500).json({ error: 'Failed to export email' });
+    }
+  },
+
+  async providerInfo(req, res) {
+    try {
+      const providerInfo = AIProviderFactory.getProviderInfo();
+      
+      res.json({
+        success: true,
+        data: providerInfo
+      });
+    } catch (error) {
+      console.error('Error getting provider info:', error);
+      res.status(500).json({ error: 'Failed to get provider information' });
+    }
+  },
+
+  async testProvider(req, res) {
+    try {
+      const { provider } = req.body;
+      
+      if (!provider) {
+        return res.status(400).json({ error: 'Provider is required' });
+      }
+
+      const isAvailable = await AIProviderFactory.testProvider(provider);
+      
+      res.json({
+        success: true,
+        provider,
+        available: isAvailable,
+        message: isAvailable ? 'Provider is working correctly' : 'Provider test failed'
+      });
+    } catch (error) {
+      console.error('Error testing provider:', error);
+      res.status(500).json({ 
+        success: false,
+        error: error.message 
+      });
     }
   }
 };
