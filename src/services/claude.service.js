@@ -1,6 +1,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const { getMessageTemplate, getTemplatesByPhase } = require('../data/message-templates');
 const { MESSAGES_PHASES, getMessagesByPhase, getPhaseForMessage, getPreviousPhases } = require('../data/messages-phases');
+const { getTemplatesByPhase: getEmailTemplatesByPhase, getGuidelinesForPhase } = require('../data/email-templates');
 
 /**
  * Claude Service for Messages Generation
@@ -311,6 +312,88 @@ class ClaudeService {
   }
 
   /**
+   * Generate emails for a specific phase with streaming support and retry mechanism
+   * @param {string} phase - The phase to generate emails for
+   * @param {object} questionsAndAnswers - User's answers to the questionnaire
+   * @param {object} previousPhasesContext - Context from previous phases
+   * @param {function} onChunk - Callback for each chunk of data
+   * @param {number} maxRetries - Maximum number of retry attempts
+   * @returns {Promise<string>} - Complete generated content
+   */
+  async generateEmailsForPhaseStream(phase, questionsAndAnswers, previousPhasesContext = {}, onChunk, maxRetries = 5) {
+    return this.executeWithRetry(async (attempt) => {
+      const startTime = Date.now();
+      let streamStarted = false;
+      
+      try {
+        this.validateInputs(phase, questionsAndAnswers);
+        
+        const templates = getEmailTemplatesByPhase(phase);
+        const prompt = this.buildEmailPhasePrompt(phase, templates, questionsAndAnswers, previousPhasesContext);
+
+        console.log(`[Claude Service] Starting email streaming generation for phase: ${phase} (attempt ${attempt}/${maxRetries})`);
+        console.log(`[Claude Service] Emails in phase: ${templates.map(t => t.number).join(', ')}`);
+        console.log(`[Claude Service] Prompt length: ${prompt.length} characters`);
+
+        const stream = await this.anthropic.messages.stream({
+          model: this.model,
+          max_tokens: 8000,
+          temperature: 0.7,
+          system: this.getEmailSystemPrompt(),
+          messages: [
+            {
+              role: 'user',
+              content: prompt
+            }
+          ]
+        });
+
+        streamStarted = true;
+        let completeContent = '';
+        let chunkCount = 0;
+
+        for await (const chunk of stream) {
+          if (chunk.type === 'content_block_delta' && chunk.delta.text) {
+            const text = chunk.delta.text;
+            completeContent += text;
+            chunkCount++;
+            
+            if (onChunk) {
+              try {
+                onChunk(text);
+              } catch (chunkError) {
+                console.warn(`[Claude Service] Error in chunk callback:`, chunkError.message);
+              }
+            }
+          }
+        }
+
+        const duration = Date.now() - startTime;
+        console.log(`[Claude Service] Email streaming completed. Total length: ${completeContent.length} characters`);
+        console.log(`[Claude Service] Processed ${chunkCount} chunks in ${duration}ms`);
+        
+        return completeContent;
+      } catch (error) {
+        const duration = Date.now() - startTime;
+        console.error(`[Claude Service] Error in email streaming generation for phase ${phase} after ${duration}ms (attempt ${attempt}/${maxRetries}):`, {
+          error: error.message,
+          phase,
+          streamStarted,
+          stack: error.stack
+        });
+        
+        // Check if this is a retryable error
+        if (this.isRetryableError(error)) {
+          throw error; // This will be caught by executeWithRetry
+        } else {
+          // Non-retryable error, handle immediately
+          this.handleError(error, `email streaming generation for phase ${phase}`);
+        }
+      }
+    }, maxRetries, phase);
+  }
+
+  /**
    * Build phase prompt for multiple messages generation
    */
   buildPhasePrompt(phase, templates, questionsAndAnswers, previousPhasesContext) {
@@ -365,6 +448,66 @@ Mantenha consistência entre as mensagens e use as informações do questionári
   }
 
   /**
+   * Build phase prompt for multiple emails generation
+   */
+  buildEmailPhasePrompt(phase, templates, questionsAndAnswers, previousPhasesContext) {
+    const { getAllPhases } = require('../data/launch-phases');
+    const phaseInfo = getAllPhases().find(p => p.key === phase);
+    
+    const prompt = `
+GERAÇÃO DE EMAILS PARA LANÇAMENTO - ${phaseInfo.name.toUpperCase()}
+
+CONTEXTO DA FASE:
+${phaseInfo.description}
+Objetivo: ${phaseInfo.context}
+
+INSTRUÇÕES GERAIS:
+Você deve gerar ${templates.length} emails para esta fase do lançamento, cada um seguindo as instruções específicas de seu template.
+
+QUESTIONÁRIO RESPONDIDO:
+${this.formatQuestionsAndAnswers(questionsAndAnswers)}
+
+${Object.keys(previousPhasesContext).length > 0 ? 
+  `CONTEXTO DAS FASES ANTERIORES:\n${this.formatPreviousPhasesContext(previousPhasesContext)}\n` : 
+  ''
+}
+
+EMAILS PARA GERAR:
+
+${templates.map((template, index) => `
+EMAIL ${template.number}: ${template.template.name.toUpperCase()}
+Assunto: ${template.template.subject}
+Timing: ${template.timing}
+Objetivo: ${template.objective}
+
+TEMPLATE ESPECÍFICO:
+${template.template.framework}
+
+DIRETRIZES:
+${template.template.guidelines}
+
+${index < templates.length - 1 ? '---' : ''}
+`).join('\n')}
+
+FORMATO DE RESPOSTA:
+Para cada email, use este formato exato:
+
+**EMAIL [NÚMERO]: [NOME DO EMAIL]**
+
+**ASSUNTO:** [Assunto do email]
+
+[Conteúdo completo do email aqui]
+
+---
+
+Substitua todos os placeholders [EXEMPLO] pelas informações reais do questionário.
+Mantenha consistência entre os emails e adapte o tom conforme a fase da campanha.
+`;
+
+    return prompt;
+  }
+
+  /**
    * Get system prompt for Claude
    * @returns {string} - System prompt
    */
@@ -379,6 +522,33 @@ Características importantes:
 - Mantém consistência narrativa ao longo da sequência
 - Usa linguagem natural e envolvente
 - Aplica gatilhos mentais apropriados para cada fase
+
+Sempre substitua os placeholders pelos dados reais fornecidos no questionário, mantendo o tom e estrutura dos templates.`;
+  }
+
+  /**
+   * Get system prompt for email generation with Claude
+   * @returns {string} - System prompt for emails
+   */
+  getEmailSystemPrompt() {
+    return `Você é um especialista em marketing digital e copywriting, especializado em sequências de e-mail para lançamentos de produtos digitais. Sua tarefa é gerar emails de alta qualidade para campanhas de lançamento, seguindo templates específicos e personalizando com base nas informações fornecidas.
+
+Características importantes:
+- Você domina técnicas de persuasão e copywriting para emails
+- Entende profundamente a psicologia do consumidor em campanhas de email
+- Sabe criar senso de urgência e escassez através de emails
+- Personaliza cada email com base no nicho e público-alvo
+- Mantém consistência narrativa ao longo da sequência de emails
+- Usa linguagem natural e envolvente em formato de email
+- Aplica gatilhos mentais apropriados para cada fase do lançamento
+- Cria linhas de assunto atrativas e persuasivas
+
+IMPORTANTE:
+- Substitua TODOS os placeholders [EXEMPLO] pelos dados reais do questionário
+- Mantenha o formato de email profissional mas pessoal
+- Adapte o tom conforme a fase: educativo no evento, urgente nas vendas
+- Use quebras de linha adequadas para facilitar a leitura
+- Inclua calls-to-action claros e persuasivos
 
 Sempre substitua os placeholders pelos dados reais fornecidos no questionário, mantendo o tom e estrutura dos templates.`;
   }
