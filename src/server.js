@@ -5,13 +5,16 @@ const routes = require('./routes');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const CORS_ORIGIN = process.env.CORS_ORIGIN;
+const isProduction = process.env.NODE_ENV === 'production';
 
 // CORS configuration
 const corsOptions = {
-  origin: ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'],
+  origin: isProduction ? CORS_ORIGIN : '*',
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Connection', 'Cache-Control'],
+  exposedHeaders: ['Content-Type', 'Transfer-Encoding']
 };
 
 app.use(cors(corsOptions));
